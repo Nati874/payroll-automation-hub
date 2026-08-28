@@ -131,6 +131,9 @@ export default function App() {
   const [autoRunMethod, setAutoRunMethod] = useState<'client' | 'backend'>(() => {
     return (localStorage.getItem('payroll_auto_run_method') as 'client' | 'backend') || 'backend';
   });
+  const [autoBackendUrl, setAutoBackendUrl] = useState(() => {
+    return localStorage.getItem('payroll_auto_backend_url') || 'http://localhost:3001';
+  });
 
   // Payout Automation runtime states
   const [autoRecords, setAutoRecords] = useState<AutomationRecord[]>([]);
@@ -183,6 +186,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('payroll_auto_run_method', autoRunMethod);
   }, [autoRunMethod]);
+
+  useEffect(() => {
+    localStorage.setItem('payroll_auto_backend_url', autoBackendUrl);
+  }, [autoBackendUrl]);
 
   // Derived filtered directory list
   const [peopleSearch, setPeopleSearch] = useState('');
@@ -552,11 +559,12 @@ export default function App() {
     logMsg({
       timestamp: new Date().toLocaleTimeString(),
       type: 'info',
-      message: 'Contacting local backend proxy at http://localhost:3001/api/run-automation...',
+      message: `Contacting backend proxy at ${autoBackendUrl}...`,
     });
 
     try {
-      const response = await fetch('http://localhost:3001/api/run-automation', {
+      const endpoint = `${autoBackendUrl.replace(/\/$/, '')}/api/run-automation`;
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1032,6 +1040,8 @@ export default function App() {
             setAutoDelay={setAutoDelay}
             autoRunMethod={autoRunMethod}
             setAutoRunMethod={setAutoRunMethod}
+            autoBackendUrl={autoBackendUrl}
+            setAutoBackendUrl={setAutoBackendUrl}
             autoRecords={autoRecords}
             autoLogs={autoLogs}
             isFetchingSheet={isFetchingSheet}

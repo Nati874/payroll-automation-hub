@@ -16,6 +16,8 @@ interface PayoutAutomationProps {
   setAutoDelay: (val: number) => void;
   autoRunMethod: 'client' | 'backend';
   setAutoRunMethod: (val: 'client' | 'backend') => void;
+  autoBackendUrl: string;
+  setAutoBackendUrl: (val: string) => void;
 
   // Runtime states
   autoRecords: AutomationRecord[];
@@ -42,6 +44,8 @@ export const PayoutAutomation: React.FC<PayoutAutomationProps> = ({
   setAutoDelay,
   autoRunMethod,
   setAutoRunMethod,
+  autoBackendUrl,
+  setAutoBackendUrl,
   autoRecords,
   autoLogs,
   isFetchingSheet,
@@ -96,6 +100,22 @@ export const PayoutAutomation: React.FC<PayoutAutomationProps> = ({
               Use the Local Backend server to bypass browser CORS security limitations and run automated programmatic session logins.
             </span>
           </div>
+
+          {autoRunMethod === 'backend' && (
+            <div className="form-group mb-4">
+              <label className="form-label">Backend Proxy Server URL</label>
+              <input
+                type="text"
+                className="input-field"
+                placeholder="e.g. http://localhost:3001 or your-service.onrender.com"
+                value={autoBackendUrl}
+                onChange={(e) => setAutoBackendUrl(e.target.value)}
+              />
+              <span style={{ fontSize: '0.8rem', color: 'var(--text-dim)' }}>
+                The address of your running local Node server or deployed Render proxy.
+              </span>
+            </div>
+          )}
           
           <div className="form-group">
             <label className="form-label">Google Spreadsheet ID</label>
