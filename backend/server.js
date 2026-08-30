@@ -41,6 +41,7 @@ app.post('/api/run-automation', async (req, res) => {
     email = process.env.ADMIN_EMAIL,
     password = process.env.ADMIN_PASSWORD,
     delayMs = 1500,
+    authHeader = '',
   } = req.body;
 
   if (records.length === 0) {
@@ -49,61 +50,77 @@ app.post('/api/run-automation', async (req, res) => {
     return;
   }
 
-  if (!loginUrl || !targetUrl) {
-    sendLog('error', 'Abort: Login URL or Payout URL not configured.');
+  if (!targetUrl) {
+    sendLog('error', 'Abort: Payout target URL not configured.');
     res.end();
     return;
   }
 
   sendLog('info', `Local Backend: Starting payout automation sequence for ${records.length} records.`);
   
-  // 1. Programmatic Login Session Step
-  sendLog('info', `Attempting login to target admin portal: ${loginUrl}`);
   let authHeaders = {};
 
-  try {
-    const loginResponse = await axios.post(
-      loginUrl,
-      {
-        email,
-        password,
-        username: email, // support alternative field names
-      },
-      {
-        headers: { 'Content-Type': 'application/json' },
-        timeout: 8000,
-        validateStatus: () => true, // resolve promise for any status code
-      }
-    );
-
-    if (loginResponse.status >= 200 && loginResponse.status < 300) {
-      sendLog('success', `Login successful! Status code: ${loginResponse.status}`);
-      
-      // Capture authentication token
-      const data = loginResponse.data || {};
-      const token = data.token || data.accessToken || (data.data && data.data.token);
-      
-      if (token) {
-        authHeaders['Authorization'] = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
-        sendLog('info', 'Session token detected and saved for subsequent payout API headers.');
-      }
-
-      // Capture session cookies
-      const setCookies = loginResponse.headers['set-cookie'];
-      if (setCookies && setCookies.length > 0) {
-        authHeaders['Cookie'] = setCookies.join('; ');
-        sendLog('info', `${setCookies.length} session cookies detected and appended to header queue.`);
-      }
-
-      if (!token && (!setCookies || setCookies.length === 0)) {
-        sendLog('info', 'No explicit token or cookie found in login response headers/body. Proceeding with anonymous payload.');
-      }
+  // 1. Session Token Injection or Programmatic Login
+  if (authHeader && authHeader.trim()) {
+    const parts = authHeader.split(':');
+    if (parts.length >= 2) {
+      const name = parts[0].trim();
+      const value = parts.slice(1).join(':').trim();
+      authHeaders[name] = value;
+      sendLog('info', `Custom session header "${name}" injected from frontend. Bypassing programmatic login.`);
     } else {
-      sendLog('error', `Login rejected by server. Code: ${loginResponse.status} - ${JSON.stringify(loginResponse.data).substring(0, 100)}`);
-      sendLog('info', 'Proceeding with payment execution sequence without credentials (might fail if endpoints are protected).');
+      // Fallback: treat as Authorization header
+      authHeaders['Authorization'] = authHeader.trim().startsWith('Bearer ') 
+        ? authHeader.trim() 
+        : `Bearer ${authHeader.trim()}`;
+      sendLog('info', 'Custom Authorization Bearer token injected from frontend. Bypassing programmatic login.');
     }
-  } catch (err) {
-    sendLog('error', `Login connection failed: ${err.message}. Proceeding without credentials.`);
+  } else if (loginUrl && loginUrl.trim()) {
+    sendLog('info', `No session header injected. Attempting login to target admin portal: ${loginUrl}`);
+    try {
+      const loginResponse = await axios.post(
+        loginUrl,
+        {
+          email,
+          password,
+          username: email,
+        },
+        {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 8000,
+          validateStatus: () => true,
+        }
+      );
+
+      if (loginResponse.status >= 200 && loginResponse.status < 300) {
+        sendLog('success', `Login successful! Status code: ${loginResponse.status}`);
+        
+        const data = loginResponse.data || {};
+        const token = data.token || data.accessToken || (data.data && data.data.token);
+        
+        if (token) {
+          authHeaders['Authorization'] = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
+          sendLog('info', 'Session token detected and saved for subsequent payout API headers.');
+        }
+
+        const setCookies = loginResponse.headers['set-cookie'];
+        if (setCookies && setCookies.length > 0) {
+          authHeaders['Cookie'] = setCookies.join('; ');
+          sendLog('info', `${setCookies.length} session cookies detected and appended to header queue.`);
+        }
+
+        if (!token && (!setCookies || setCookies.length === 0)) {
+          sendLog('info', 'No explicit token or cookie found in login response headers/body. Proceeding with anonymous payload.');
+        }
+      } else {
+        sendLog('error', `Login rejected by server. Code: ${loginResponse.status} - ${JSON.stringify(loginResponse.data).substring(0, 100)}`);
+        sendLog('info', 'Proceeding with payment execution sequence without credentials (might fail if endpoints are protected).');
+      }
+    } catch (err) {
+      sendLog('error', `Login connection failed: ${err.message}. Proceeding without credentials.`);
+    }
+  } else {
+    sendLog('info', 'No session header or login URL provided. Proceeding with anonymous payloads.');
   }
 
   // 2. Sequential Request Loop
