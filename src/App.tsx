@@ -135,6 +135,12 @@ export default function App() {
     return localStorage.getItem('payroll_auto_backend_url') || 'http://localhost:3001';
   });
 
+  // Rotation priority state
+  const [prioritizeRotation, setPrioritizeRotation] = useState<boolean>(() => {
+    const saved = localStorage.getItem('payroll_prioritize_rotation');
+    return saved !== null ? saved === 'true' : true;
+  });
+
   // Payout Automation runtime states
   const [autoRecords, setAutoRecords] = useState<AutomationRecord[]>([]);
   const [autoLogs, setAutoLogs] = useState<AutomationLog[]>([]);
@@ -191,6 +197,10 @@ export default function App() {
     localStorage.setItem('payroll_auto_backend_url', autoBackendUrl);
   }, [autoBackendUrl]);
 
+  useEffect(() => {
+    localStorage.setItem('payroll_prioritize_rotation', prioritizeRotation.toString());
+  }, [prioritizeRotation]);
+
   // Derived filtered directory list
   const [peopleSearch, setPeopleSearch] = useState('');
   const filteredPeople = useMemo(() => {
@@ -203,16 +213,26 @@ export default function App() {
 
   // Map database details onto incoming payroll list
   const activeRecords = useMemo(() => {
-    return parsedRecords.map((item) => {
+    const mapped = parsedRecords.map((item) => {
       const match = people.find((p) => p.email.toLowerCase() === item.email.toLowerCase());
       return {
         ...item,
         fullNameDB: match?.fullName || item.fullNameDB || '',
         bankAccount: match?.bankAccount || item.bankAccount || '',
         bankType: match?.bankType || item.bankType,
+        lastPaidAt: match?.lastPaidAt || undefined,
       };
     });
-  }, [parsedRecords, people]);
+
+    if (prioritizeRotation) {
+      return [...mapped].sort((a, b) => {
+        const timeA = a.lastPaidAt ? new Date(a.lastPaidAt).getTime() : 0;
+        const timeB = b.lastPaidAt ? new Date(b.lastPaidAt).getTime() : 0;
+        return timeA - timeB; // oldest (or never paid) first
+      });
+    }
+    return mapped;
+  }, [parsedRecords, people, prioritizeRotation]);
 
   // Financial totals summary calculations
   const totals = useMemo(() => {
@@ -532,6 +552,24 @@ export default function App() {
       setIsFetchingSheet(false);
     }
   };
+  const handleAddAutomationLog = (log: AutomationLog) => {
+    setAutoLogs((prev) => [log, ...prev]);
+
+    if (log.type === 'success' && log.message.includes('[Success] Payout recorded for ')) {
+      const matchSuccess = log.message.match(/\[Success\] Payout recorded for\s+(\S+)/);
+      if (matchSuccess) {
+        const successEmail = matchSuccess[1].trim().split(' ')[0].replace(/[()]/g, '').toLowerCase();
+        setPeople((prev) =>
+          prev.map((p) => {
+            if (p.email.toLowerCase() === successEmail) {
+              return { ...p, lastPaidAt: new Date().toISOString() };
+            }
+            return p;
+          })
+        );
+      }
+    }
+  };
 
   // Run the Client-Side sequential dispatch automation
   const handleRunClientAutomation = async () => {
@@ -541,7 +579,7 @@ export default function App() {
         autoTargetUrl,
         autoAuthHeader,
         autoDelay,
-        (log) => setAutoLogs((prev) => [log, ...prev]),
+        handleAddAutomationLog,
         (idx) => setAutoCurrentIdx(idx)
       );
       showNotif('success', 'Payout automation runner complete!');
@@ -554,9 +592,7 @@ export default function App() {
 
   // Run the local Node.js backend sequential dispatch automation
   const handleRunBackendAutomation = async () => {
-    const logMsg = (log: AutomationLog) => setAutoLogs((prev) => [log, ...prev]);
-
-    logMsg({
+    handleAddAutomationLog({
       timestamp: new Date().toLocaleTimeString(),
       type: 'info',
       message: `Contacting backend proxy at ${autoBackendUrl}...`,
@@ -600,7 +636,7 @@ export default function App() {
           if (!line.trim()) continue;
           try {
             const parsedLog = JSON.parse(line) as AutomationLog;
-            logMsg(parsedLog);
+            handleAddAutomationLog(parsedLog);
 
             // Update progress index dynamically
             if (parsedLog.message.includes('[Success]')) {
@@ -611,7 +647,7 @@ export default function App() {
               setAutoCurrentIdx((prev) => prev + 1);
             }
           } catch (e) {
-            logMsg({
+            handleAddAutomationLog({
               timestamp: new Date().toLocaleTimeString(),
               type: 'info',
               message: line,
@@ -622,7 +658,7 @@ export default function App() {
 
       showNotif('success', `Backend run complete. Success: ${successCount}, Failures: ${failureCount}`);
     } catch (err: any) {
-      logMsg({
+      handleAddAutomationLog({
         timestamp: new Date().toLocaleTimeString(),
         type: 'error',
         message: `Local Backend connection failed: ${err.message}. Make sure the Node server is running on http://localhost:3001.`,
@@ -967,6 +1003,8 @@ export default function App() {
             triggerQuickAdd={triggerQuickAdd}
             handleExportExcel={handleExportExcel}
             handleExportGoogleSheet={handleExportGoogleSheet}
+            prioritizeRotation={prioritizeRotation}
+            setPrioritizeRotation={setPrioritizeRotation}
           />
         )}
 

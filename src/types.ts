@@ -3,6 +3,7 @@ export interface Person {
   fullName?: string;
   bankAccount?: string;
   bankType?: 'CBE' | 'Telebirr';
+  lastPaidAt?: string;
 }
 
 export interface Division {
@@ -23,6 +24,7 @@ export interface PayoutRecord {
   fullNameDB?: string; // matched from DB
   owedETB?: number; // calculated: owed * exchangeRate
   selected: boolean; // UI selection for payout inclusion
+  lastPaidAt?: string; // matched from DB
 }
 
 export interface GoogleApiConfig {

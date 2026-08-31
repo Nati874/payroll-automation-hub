@@ -9,6 +9,7 @@ import {
   Download
 } from 'lucide-react';
 import type { PayoutRecord } from '../types';
+import { parseSmartPayoutCommand } from '../utils/parser';
 
 interface PayrollProcessingProps {
   rawPayrollText: string;
@@ -34,6 +35,8 @@ interface PayrollProcessingProps {
   triggerQuickAdd: (email: string, name: string) => void;
   handleExportExcel: () => void;
   handleExportGoogleSheet: () => void;
+  prioritizeRotation: boolean;
+  setPrioritizeRotation: (val: boolean) => void;
 }
 
 export const PayrollProcessing: React.FC<PayrollProcessingProps> = ({
@@ -54,8 +57,23 @@ export const PayrollProcessing: React.FC<PayrollProcessingProps> = ({
   flaggedSet,
   triggerQuickAdd,
   handleExportExcel,
-  handleExportGoogleSheet
+  handleExportGoogleSheet,
+  prioritizeRotation,
+  setPrioritizeRotation
 }) => {
+  const [plannerCommand, setPlannerCommand] = React.useState('');
+  const [plannerLog, setPlannerLog] = React.useState('');
+
+  const handleRunPlanner = () => {
+    if (!plannerCommand.trim()) return;
+    const { records: updated, log } = parseSmartPayoutCommand(
+      plannerCommand,
+      parsedRecords,
+      exchangeRate
+    );
+    setParsedRecords(updated);
+    setPlannerLog(log);
+  };
   return (
     <div>
       <header className="view-header">
@@ -182,6 +200,54 @@ export const PayrollProcessing: React.FC<PayrollProcessingProps> = ({
                     value={payoutCap}
                     onChange={(e) => setPayoutCap(Number(e.target.value))}
                   />
+                </div>
+              )}
+
+              <div className="form-group" style={{ justifyContent: 'center' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', marginTop: '16px' }}>
+                  <input
+                    type="checkbox"
+                    className="custom-checkbox"
+                    checked={prioritizeRotation}
+                    onChange={(e) => setPrioritizeRotation(e.target.checked)}
+                  />
+                  <span style={{ fontWeight: '600', fontSize: '0.9rem' }}>
+                    Prioritize Rotational Queue (Unpaid First)
+                  </span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          {/* Smart Payout Planner Console */}
+          <div className="glass-panel" style={{ borderLeft: '4px solid var(--color-success)' }}>
+            <div className="glass-panel-title">
+              <Wallet size={18} className="nav-icon" style={{ color: 'var(--color-success)' }} />
+              Smart Payout Planner (AI-Style)
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>
+                Type instructions to automatically calculate and select payouts. (e.g. <i>"pay 25 people $100 each"</i>, <i>"split $3000 evenly"</i>, or <i>"distribute $5000 proportional to owed"</i>).
+              </p>
+              <div style={{ display: 'flex', gap: '12px' }}>
+                <input
+                  type="text"
+                  className="input-field"
+                  placeholder="e.g. split $5000 evenly among 37 people"
+                  value={plannerCommand}
+                  onChange={(e) => setPlannerCommand(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleRunPlanner();
+                  }}
+                />
+                <button className="btn btn-success" onClick={handleRunPlanner}>
+                  Apply Command
+                </button>
+              </div>
+              {plannerLog && (
+                <div className="success-banner" style={{ margin: '8px 0 0 0', padding: '12px 16px' }}>
+                  <Info size={16} />
+                  <span>{plannerLog}</span>
                 </div>
               )}
             </div>
