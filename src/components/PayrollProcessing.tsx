@@ -63,13 +63,21 @@ export const PayrollProcessing: React.FC<PayrollProcessingProps> = ({
 }) => {
   const [plannerCommand, setPlannerCommand] = React.useState('');
   const [plannerLog, setPlannerLog] = React.useState('');
+  const [mustIncludeEmails, setMustIncludeEmails] = React.useState(() => {
+    return localStorage.getItem('payroll_planner_must_include') || '';
+  });
+
+  React.useEffect(() => {
+    localStorage.setItem('payroll_planner_must_include', mustIncludeEmails);
+  }, [mustIncludeEmails]);
 
   const handleRunPlanner = () => {
     if (!plannerCommand.trim()) return;
     const { records: updated, log } = parseSmartPayoutCommand(
       plannerCommand,
       parsedRecords,
-      exchangeRate
+      exchangeRate,
+      mustIncludeEmails
     );
     setParsedRecords(updated);
     setPlannerLog(log);
@@ -243,6 +251,18 @@ export const PayrollProcessing: React.FC<PayrollProcessingProps> = ({
                 <button className="btn btn-success" onClick={handleRunPlanner}>
                   Apply Command
                 </button>
+              </div>
+              <div className="form-group mb-2">
+                <label className="form-label" style={{ fontSize: '0.75rem', fontWeight: 650 }}>
+                  Must-Include Emails (comma-separated, paid first)
+                </label>
+                <textarea
+                  className="textarea-field"
+                  placeholder="e.g. emnet@gmail.com, bilen@gmail.com"
+                  value={mustIncludeEmails}
+                  onChange={(e) => setMustIncludeEmails(e.target.value)}
+                  style={{ minHeight: '60px' }}
+                />
               </div>
               {plannerLog && (
                 <div className="success-banner" style={{ margin: '8px 0 0 0', padding: '12px 16px' }}>

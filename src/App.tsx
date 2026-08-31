@@ -134,6 +134,10 @@ export default function App() {
   const [autoBackendUrl, setAutoBackendUrl] = useState(() => {
     return localStorage.getItem('payroll_auto_backend_url') || 'http://localhost:3001';
   });
+  const [autoDetectLatestTab, setAutoDetectLatestTab] = useState<boolean>(() => {
+    const saved = localStorage.getItem('payroll_auto_detect_latest_tab');
+    return saved !== null ? saved === 'true' : true;
+  });
 
   // Rotation priority state
   const [prioritizeRotation, setPrioritizeRotation] = useState<boolean>(() => {
@@ -200,6 +204,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('payroll_prioritize_rotation', prioritizeRotation.toString());
   }, [prioritizeRotation]);
+
+  useEffect(() => {
+    localStorage.setItem('payroll_auto_detect_latest_tab', autoDetectLatestTab.toString());
+  }, [autoDetectLatestTab]);
 
   // Derived filtered directory list
   const [peopleSearch, setPeopleSearch] = useState('');
@@ -534,10 +542,46 @@ export default function App() {
       showNotif('success', 'Requesting Google authorization... check for pop-up.');
       const accessToken = await requestGoogleAccessToken(googleConfig.clientId);
 
+      let rangeToFetch = autoRange;
+      if (autoDetectLatestTab) {
+        showNotif('success', 'Auto-detecting latest sheet tab...');
+        const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${autoSpreadsheetId}?key=${googleConfig.apiKey}`;
+        const metaResponse = await fetch(metaUrl, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        });
+        if (metaResponse.ok) {
+          const metaData = await metaResponse.json();
+          const sheets = metaData.sheets || [];
+          let maxNum = 0;
+          let matchedTitle = '';
+          
+          for (const s of sheets) {
+            const title = s.properties?.title || '';
+            const match = title.match(/payment\s*(\d+)/i);
+            if (match) {
+              const num = parseInt(match[1], 10);
+              if (num > maxNum) {
+                maxNum = num;
+                matchedTitle = title;
+              }
+            }
+          }
+
+          if (matchedTitle) {
+            const rangeParts = autoRange.split('!');
+            const cellsRange = rangeParts.length > 1 ? rangeParts[1] : 'A1:H100';
+            rangeToFetch = `${matchedTitle}!${cellsRange}`;
+            showNotif('success', `Latest tab detected: "${matchedTitle}". Fetching range...`);
+          }
+        }
+      }
+
       showNotif('success', 'Reading cells from Google Sheet...');
       const rows = await fetchGoogleSheetData(
         autoSpreadsheetId,
-        autoRange,
+        rangeToFetch,
         accessToken,
         googleConfig.apiKey
       );
@@ -1093,8 +1137,10 @@ export default function App() {
             setAutoDelay={setAutoDelay}
             autoRunMethod={autoRunMethod}
             setAutoRunMethod={setAutoRunMethod}
-            autoBackendUrl={autoBackendUrl}
+             autoBackendUrl={autoBackendUrl}
             setAutoBackendUrl={setAutoBackendUrl}
+            autoDetectLatestTab={autoDetectLatestTab}
+            setAutoDetectLatestTab={setAutoDetectLatestTab}
             autoRecords={autoRecords}
             autoLogs={autoLogs}
             isFetchingSheet={isFetchingSheet}

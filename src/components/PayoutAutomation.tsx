@@ -18,6 +18,8 @@ interface PayoutAutomationProps {
   setAutoRunMethod: (val: 'client' | 'backend') => void;
   autoBackendUrl: string;
   setAutoBackendUrl: (val: string) => void;
+  autoDetectLatestTab: boolean;
+  setAutoDetectLatestTab: (val: boolean) => void;
 
   // Runtime states
   autoRecords: AutomationRecord[];
@@ -46,6 +48,8 @@ export const PayoutAutomation: React.FC<PayoutAutomationProps> = ({
   setAutoRunMethod,
   autoBackendUrl,
   setAutoBackendUrl,
+  autoDetectLatestTab,
+  setAutoDetectLatestTab,
   autoRecords,
   autoLogs,
   isFetchingSheet,
@@ -152,6 +156,23 @@ export const PayoutAutomation: React.FC<PayoutAutomationProps> = ({
                 onChange={(e) => setAutoDelay(Number(e.target.value))}
               />
             </div>
+          </div>
+
+          <div className="form-group mb-4" style={{ marginTop: '8px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                className="custom-checkbox"
+                checked={autoDetectLatestTab}
+                onChange={(e) => setAutoDetectLatestTab(e.target.checked)}
+              />
+              <span style={{ fontWeight: '600', fontSize: '0.85rem' }}>
+                Auto-Detect Latest Payment Tab (e.g. use payment 10 dynamically)
+              </span>
+            </label>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginLeft: '26px' }}>
+              If enabled, fetching sheet data will query all tabs and automatically read the highest numbered "payment N" tab.
+            </span>
           </div>
 
           <div className="form-group">

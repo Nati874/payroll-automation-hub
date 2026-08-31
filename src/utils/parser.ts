@@ -190,7 +190,8 @@ function normalizeBankType(val: any): 'CBE' | 'Telebirr' | undefined {
 export function parseSmartPayoutCommand(
   command: string,
   records: PayoutRecord[],
-  exchangeRate: number
+  exchangeRate: number,
+  mustIncludeEmails: string = ''
 ): { records: PayoutRecord[]; log: string } {
   const normalized = command.trim().toLowerCase();
   
@@ -201,7 +202,35 @@ export function parseSmartPayoutCommand(
   // Create a deep copy of records to prevent mutation issues
   let updatedRecords = records.map((r) => ({ ...r }));
 
-  // 1. Determine Sorting Strategy
+  // 1. Parse Must-Include Emails set
+  const forcedSet = new Set(
+    mustIncludeEmails
+      .split(',')
+      .map((e) => e.trim().toLowerCase())
+      .filter((e) => e.length > 0)
+  );
+
+  // 2. Parse individual threshold caps (e.g., "if owed $100+ pay them 100")
+  let capThreshold: number | null = null;
+  let capLimit: number | null = null;
+
+  // Regex pattern matches: "owed $100+ ... pay 100", "owed > 100 ... limit to 100", etc.
+  const capMatch = normalized.match(/owed\s*\$?([\d,]+)\+?\s*(?:[a-zA-Z\s]+)?pay\s*(?:them\s*)?\$?([\d,]+)/i);
+  if (capMatch) {
+    capThreshold = parseFloat(capMatch[1].replace(/,/g, ''));
+    capLimit = parseFloat(capMatch[2].replace(/,/g, ''));
+  }
+
+  // Helper function to apply threshold caps to any calculated payout
+  const getCappedPayout = (originalOwed: number, proposedPayout: number) => {
+    let amt = proposedPayout;
+    if (capThreshold !== null && capLimit !== null && originalOwed >= capThreshold) {
+      amt = Math.min(amt, capLimit);
+    }
+    return Math.max(0, Math.min(amt, originalOwed));
+  };
+
+  // 3. Determine Sorting Strategy
   let sortStrategy = 'rotation'; // default: rotational queue
   if (normalized.includes('smallest') || normalized.includes('lowest') || normalized.includes('least')) {
     sortStrategy = 'smallest_owed';
@@ -215,25 +244,30 @@ export function parseSmartPayoutCommand(
     return { records, log: 'Error: No eligible people with an active owed balance were found.' };
   }
 
-  // Apply sorting strategy on candidates
+  // Partition candidates: Must-Include goes first
+  const forcedCandidates = candidates.filter((c) => forcedSet.has(c.email.toLowerCase()));
+  const otherCandidates = candidates.filter((c) => !forcedSet.has(c.email.toLowerCase()));
+
+  // Sort otherCandidates
   if (sortStrategy === 'smallest_owed') {
-    candidates.sort((a, b) => a.owed - b.owed);
+    otherCandidates.sort((a, b) => a.owed - b.owed);
   } else if (sortStrategy === 'largest_owed') {
-    candidates.sort((a, b) => b.owed - a.owed);
+    otherCandidates.sort((a, b) => b.owed - a.owed);
   } else {
     // Keep chronological rotation queue (which is pre-sorted in activeRecords)
-    // To ensure consistency, we preserve their exact index placement in the activeRecords list
     const orderMap = new Map(updatedRecords.map((r, idx) => [r.email.toLowerCase(), idx]));
-    candidates.sort((a, b) => (orderMap.get(a.email.toLowerCase()) ?? 0) - (orderMap.get(b.email.toLowerCase()) ?? 0));
+    otherCandidates.sort((a, b) => (orderMap.get(a.email.toLowerCase()) ?? 0) - (orderMap.get(b.email.toLowerCase()) ?? 0));
   }
 
-  // 2. Extract Budget Cap (e.g. 5000, 3000)
-  // Look for: "reaches 5000", "up to 5000", "budget of 5000", "limit of 5000", "total of 5000", or "split 5000", "distribute 5000"
+  // Merge so that Must-Include candidates are always processed first
+  const queue = [...forcedCandidates, ...otherCandidates];
+
+  // 4. Extract Budget Cap (e.g. 5000, 3000)
   let budgetCap: number | null = null;
   const budgetRegexes = [
     /(?:until it reaches|up to|budget of|limit of|total of|cap of)\s+\$?([\d,]+(?:\.\d+)?)/i,
     /(?:split|distribute)\s+\$?([\d,]+(?:\.\d+)?)/i,
-    /([1-9]\d{2,})\s*(?:dollars|usd)/i // e.g. "5000 dollars"
+    /([1-9]\d{2,})\s*(?:dollars|usd)/i
   ];
 
   for (const regex of budgetRegexes) {
@@ -244,7 +278,6 @@ export function parseSmartPayoutCommand(
     }
   }
 
-  // If no budget matched but we see a trailing number like "reaches 5000" or just a number at the end:
   if (budgetCap === null) {
     const endNumberMatch = normalized.match(/\b([1-9]\d{1,})\b\s*$/);
     if (endNumberMatch) {
@@ -252,8 +285,8 @@ export function parseSmartPayoutCommand(
     }
   }
 
-  // 3. Determine Payout Distribution Style
-  let distStyle = 'full'; // default style: full owed balance accumulation
+  // 5. Determine Payout Distribution Style
+  let distStyle = 'full'; 
   let fixedAmount: number | null = null;
 
   if (normalized.includes('split') || normalized.includes('divide') || normalized.includes('evenly')) {
@@ -261,7 +294,6 @@ export function parseSmartPayoutCommand(
   } else if (normalized.includes('proportional')) {
     distStyle = 'proportional';
   } else {
-    // Check for fixed payment instruction: e.g. "pay $100 each", "pay everyone $100", "$100 each"
     const eachRegex = /(?:pay|each|everyone)\s+\$?([\d,]+(?:\.\d+)?)(?:\s+each)?/i;
     const eachMatch = normalized.match(eachRegex);
     if (eachMatch) {
@@ -272,66 +304,60 @@ export function parseSmartPayoutCommand(
     }
   }
 
-  // Helper log message about sorting
   const sortLog = sortStrategy === 'smallest_owed' 
-    ? 'sorted by smallest owed balances first' 
+    ? 'sorted by smallest owed' 
     : sortStrategy === 'largest_owed' 
-    ? 'sorted by largest owed balances first' 
-    : 'sorted by rotational queue (longest unpaid first)';
+    ? 'sorted by largest owed' 
+    : 'sorted by rotational queue';
 
-  // 4. Execute Selected Payout Allocation Logic
   const selectedEmails = new Map<string, number>();
 
+  // 6. Execute Selected Payout Allocation Logic
   if (distStyle === 'split') {
-    // split total budget evenly among candidates (or N candidates if specified)
     if (budgetCap === null || budgetCap <= 0) {
       return { records, log: 'Error: Please specify a budget amount to split (e.g. "split $5000").' };
     }
 
-    // Extract optional limit of people (e.g. "among 37 people")
     const peopleMatch = normalized.match(/among\s+(\d+)\s+people/i);
-    const limitPeople = peopleMatch ? parseInt(peopleMatch[1], 10) : candidates.length;
-    const countToPay = Math.min(limitPeople, candidates.length);
+    const limitPeople = peopleMatch ? parseInt(peopleMatch[1], 10) : queue.length;
+    const countToPay = Math.min(limitPeople, queue.length);
 
     if (countToPay === 0) {
       return { records, log: 'Error: No eligible candidates found.' };
     }
 
     const splitVal = Number((budgetCap / countToPay).toFixed(2));
-    const targets = candidates.slice(0, countToPay);
+    const targets = queue.slice(0, countToPay);
     
     for (const t of targets) {
-      selectedEmails.set(t.email.toLowerCase(), Math.min(splitVal, t.owed));
+      selectedEmails.set(t.email.toLowerCase(), getCappedPayout(t.owed, splitVal));
     }
   } else if (distStyle === 'proportional') {
     if (budgetCap === null || budgetCap <= 0) {
       return { records, log: 'Error: Please specify a budget amount to distribute (e.g. "distribute $5000 proportional").' };
     }
 
-    const totalOwed = candidates.reduce((sum, r) => sum + r.owed, 0);
-    for (const c of candidates) {
+    const totalOwed = queue.reduce((sum, r) => sum + r.owed, 0);
+    for (const c of queue) {
       const prop = c.owed / totalOwed;
-      const amount = Number(Math.min(prop * budgetCap, c.owed).toFixed(2));
+      const amount = getCappedPayout(c.owed, prop * budgetCap);
       if (amount > 0) {
         selectedEmails.set(c.email.toLowerCase(), amount);
       }
     }
   } else if (distStyle === 'fixed') {
-    // pay fixed amount per person up to optional budgetCap
     const amt = fixedAmount ?? 0;
     let currentSum = 0;
     
-    // Extract optional limit of people: e.g. "pay 25 people $100"
     const peopleMatch = normalized.match(/(\d+)\s+people/i);
-    const limitPeople = peopleMatch ? parseInt(peopleMatch[1], 10) : candidates.length;
+    const limitPeople = peopleMatch ? parseInt(peopleMatch[1], 10) : queue.length;
 
-    for (const c of candidates) {
+    for (const c of queue) {
       if (selectedEmails.size >= limitPeople) break;
       
-      const payout = Math.min(amt, c.owed);
+      const payout = getCappedPayout(c.owed, amt);
       if (budgetCap !== null && currentSum + payout > budgetCap) {
-        // Capped by budget limit
-        const remainder = budgetCap - currentSum;
+        const remainder = getCappedPayout(c.owed, budgetCap - currentSum);
         if (remainder > 0) {
           selectedEmails.set(c.email.toLowerCase(), Number(remainder.toFixed(2)));
           currentSum += remainder;
@@ -342,18 +368,18 @@ export function parseSmartPayoutCommand(
       currentSum += payout;
     }
   } else {
-    // Greedy Full accumulation (default style): pay full balance of each person one-by-one until budget is spent
+    // Greedy Full accumulation (default style)
     let currentSum = 0;
     
-    for (const c of candidates) {
-      const payout = c.owed;
+    for (const c of queue) {
+      const payout = getCappedPayout(c.owed, c.owed);
       
       if (budgetCap !== null) {
         if (currentSum >= budgetCap) {
           break;
         }
         if (currentSum + payout > budgetCap) {
-          const remainder = budgetCap - currentSum;
+          const remainder = getCappedPayout(c.owed, budgetCap - currentSum);
           if (remainder > 0) {
             selectedEmails.set(c.email.toLowerCase(), Number(remainder.toFixed(2)));
             currentSum += remainder;
@@ -367,7 +393,7 @@ export function parseSmartPayoutCommand(
     }
   }
 
-  // 5. Update and return records based on selected Map
+  // 7. Update and return records based on selected Map
   updatedRecords = updatedRecords.map((r) => {
     const emailKey = r.email.toLowerCase();
     if (selectedEmails.has(emailKey)) {
@@ -394,8 +420,11 @@ export function parseSmartPayoutCommand(
   else if (distStyle === 'fixed') styleDesc = `fixed payout of $${fixedAmount?.toFixed(2)} each`;
   else styleDesc = 'full balance payouts';
 
+  let includeLog = forcedSet.size > 0 ? ` forced ${forcedSet.size} emails first,` : '';
+  let capLog = (capThreshold !== null && capLimit !== null) ? ` individual cap of $${capLimit} for balances >= $${capThreshold} applied,` : '';
+
   return {
     records: updatedRecords,
-    log: `Instruction applied: Allocated funds using ${styleDesc} (${sortLog}). Selected ${selectedCount} people, total calculation: $${finalSum.toFixed(2)}.`,
+    log: `Instruction applied:${includeLog}${capLog} allocated funds using ${styleDesc} (${sortLog}). Selected ${selectedCount} people, total calculation: $${finalSum.toFixed(2)}.`,
   };
 }
