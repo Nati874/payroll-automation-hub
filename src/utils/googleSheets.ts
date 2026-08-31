@@ -53,18 +53,37 @@ export async function exportPayrollToGoogleSheet(
   records: PayoutRecord[],
   exchangeRate: number
 ): Promise<string> {
-  const dateStr = new Date().toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  }).replace(/,/, '').replace(/\s+/g, '_').replace(/:/g, '-');
-  
-  const sheetTitle = `Payroll_${dateStr}`;
+  // 1. Fetch spreadsheet metadata to get existing sheet titles and find the next index
+  const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?key=${apiKey}`;
+  const metaResponse = await fetch(metaUrl, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
 
-  // 1. Send request to create a new sheet in the spreadsheet
+  let nextPaymentNum = 1;
+  if (metaResponse.ok) {
+    const metaData = await metaResponse.json().catch(() => ({}));
+    const sheets = metaData.sheets || [];
+    let maxNum = 0;
+    
+    for (const s of sheets) {
+      const title = s.properties?.title || '';
+      // Match patterns like "payment 8", "payment8", "Payment 9"
+      const match = title.match(/payment\s*(\d+)/i);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        if (num > maxNum) {
+          maxNum = num;
+        }
+      }
+    }
+    nextPaymentNum = maxNum + 1;
+  }
+  
+  const sheetTitle = `payment ${nextPaymentNum}`;
+
+  // 2. Send request to create the new auto-incremented sheet
   const batchUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate?key=${apiKey}`;
   const addSheetBody = {
     requests: [
@@ -97,34 +116,32 @@ export async function exportPayrollToGoogleSheet(
     );
   }
 
-  // 2. Prepare values to write
+  // 3. Prepare values to write: email | name | method | account no | dollar | birr | status | record
   const headers = [
-    'Full Name',
-    'Email Address',
-    'Bank Type',
-    'Bank Account',
-    'Owed (USD)',
-    'Owed (ETB)',
-    'Earned (USD)',
-    'Paid (USD)',
-    'Flagged (USD)',
+    'email',
+    'name',
+    'method',
+    'account no',
+    'dollar',
+    'birr',
+    'status',
+    'record'
   ];
 
   const rows = records.map((rec) => [
-    rec.fullNameDB || rec.name,
     rec.email,
-    rec.bankType || 'Not Linked',
-    rec.bankAccount || 'Not Linked',
+    rec.fullNameDB || rec.name,
+    rec.bankType || 'CBE',
+    rec.bankAccount || '',
     rec.owed,
     parseFloat((rec.owed * exchangeRate).toFixed(2)),
-    rec.earned,
-    rec.paid,
-    rec.flagged,
+    '', // status (empty)
+    '', // record (empty)
   ]);
 
   const valuesData = [headers, ...rows];
 
-  // 3. Write data to the new sheet A1
+  // 4. Write data to the new sheet A1
   const writeUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
     sheetTitle
   )}!A1?valueInputOption=USER_ENTERED&key=${apiKey}`;
