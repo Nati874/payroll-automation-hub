@@ -198,164 +198,204 @@ export function parseSmartPayoutCommand(
     return { records, log: 'No command entered.' };
   }
 
-  // Create a deep copy of records to prevent mutation issues before returning
+  // Create a deep copy of records to prevent mutation issues
   let updatedRecords = records.map((r) => ({ ...r }));
 
-  // Helper: total owed sum
-  const sumOwed = updatedRecords.reduce((sum, r) => sum + r.owed, 0);
-
-  // 1. Check for: "pay everyone full" or "pay full"
-  if (normalized === 'pay everyone full' || normalized === 'pay full') {
-    updatedRecords = updatedRecords.map((r) => ({
-      ...r,
-      selected: r.owed > 0,
-      owedETB: Number((r.owed * exchangeRate).toFixed(2)),
-    }));
-    return {
-      records: updatedRecords,
-      log: `Instruction applied: Paid full owed balance for all ${updatedRecords.filter(r => r.selected).length} eligible people. Total: $${sumOwed.toFixed(2)}.`,
-    };
+  // 1. Determine Sorting Strategy
+  let sortStrategy = 'rotation'; // default: rotational queue
+  if (normalized.includes('smallest') || normalized.includes('lowest') || normalized.includes('least')) {
+    sortStrategy = 'smallest_owed';
+  } else if (normalized.includes('largest') || normalized.includes('highest') || normalized.includes('most') || normalized.includes('biggest')) {
+    sortStrategy = 'largest_owed';
   }
 
-  // 2. Check for: "split $X evenly among Y people" or "split $X"
-  const splitRegex = /split\s+\$?([\d,]+(?:\.\d+)?)(?:\s+evenly)?(?:\s+among\s+(\d+)\s+people)?/i;
-  const splitMatch = normalized.match(splitRegex);
-  if (splitMatch) {
-    const totalBudget = parseFloat(splitMatch[1].replace(/,/g, ''));
-    const limitPeople = splitMatch[2] ? parseInt(splitMatch[2], 10) : updatedRecords.length;
+  // Filter candidates with active owed balances
+  let candidates = updatedRecords.filter((r) => r.owed > 0);
+  if (candidates.length === 0) {
+    return { records, log: 'Error: No eligible people with an active owed balance were found.' };
+  }
 
-    if (isNaN(totalBudget) || totalBudget <= 0) {
-      return { records, log: 'Error: Invalid budget amount parsed from command.' };
+  // Apply sorting strategy on candidates
+  if (sortStrategy === 'smallest_owed') {
+    candidates.sort((a, b) => a.owed - b.owed);
+  } else if (sortStrategy === 'largest_owed') {
+    candidates.sort((a, b) => b.owed - a.owed);
+  } else {
+    // Keep chronological rotation queue (which is pre-sorted in activeRecords)
+    // To ensure consistency, we preserve their exact index placement in the activeRecords list
+    const orderMap = new Map(updatedRecords.map((r, idx) => [r.email.toLowerCase(), idx]));
+    candidates.sort((a, b) => (orderMap.get(a.email.toLowerCase()) ?? 0) - (orderMap.get(b.email.toLowerCase()) ?? 0));
+  }
+
+  // 2. Extract Budget Cap (e.g. 5000, 3000)
+  // Look for: "reaches 5000", "up to 5000", "budget of 5000", "limit of 5000", "total of 5000", or "split 5000", "distribute 5000"
+  let budgetCap: number | null = null;
+  const budgetRegexes = [
+    /(?:until it reaches|up to|budget of|limit of|total of|cap of)\s+\$?([\d,]+(?:\.\d+)?)/i,
+    /(?:split|distribute)\s+\$?([\d,]+(?:\.\d+)?)/i,
+    /([1-9]\d{2,})\s*(?:dollars|usd)/i // e.g. "5000 dollars"
+  ];
+
+  for (const regex of budgetRegexes) {
+    const match = normalized.match(regex);
+    if (match) {
+      budgetCap = parseFloat(match[1].replace(/,/g, ''));
+      break;
+    }
+  }
+
+  // If no budget matched but we see a trailing number like "reaches 5000" or just a number at the end:
+  if (budgetCap === null) {
+    const endNumberMatch = normalized.match(/\b([1-9]\d{1,})\b\s*$/);
+    if (endNumberMatch) {
+      budgetCap = parseFloat(endNumberMatch[1]);
+    }
+  }
+
+  // 3. Determine Payout Distribution Style
+  let distStyle = 'full'; // default style: full owed balance accumulation
+  let fixedAmount: number | null = null;
+
+  if (normalized.includes('split') || normalized.includes('divide') || normalized.includes('evenly')) {
+    distStyle = 'split';
+  } else if (normalized.includes('proportional')) {
+    distStyle = 'proportional';
+  } else {
+    // Check for fixed payment instruction: e.g. "pay $100 each", "pay everyone $100", "$100 each"
+    const eachRegex = /(?:pay|each|everyone)\s+\$?([\d,]+(?:\.\d+)?)(?:\s+each)?/i;
+    const eachMatch = normalized.match(eachRegex);
+    if (eachMatch) {
+      fixedAmount = parseFloat(eachMatch[1].replace(/,/g, ''));
+      if (!isNaN(fixedAmount)) {
+        distStyle = 'fixed';
+      }
+    }
+  }
+
+  // Helper log message about sorting
+  const sortLog = sortStrategy === 'smallest_owed' 
+    ? 'sorted by smallest owed balances first' 
+    : sortStrategy === 'largest_owed' 
+    ? 'sorted by largest owed balances first' 
+    : 'sorted by rotational queue (longest unpaid first)';
+
+  // 4. Execute Selected Payout Allocation Logic
+  const selectedEmails = new Map<string, number>();
+
+  if (distStyle === 'split') {
+    // split total budget evenly among candidates (or N candidates if specified)
+    if (budgetCap === null || budgetCap <= 0) {
+      return { records, log: 'Error: Please specify a budget amount to split (e.g. "split $5000").' };
     }
 
-    // Select target people (since they are pre-sorted by lastPaidAt/rotation in activeRecords, we take the top N)
-    const candidates = updatedRecords.filter(r => r.owed > 0);
+    // Extract optional limit of people (e.g. "among 37 people")
+    const peopleMatch = normalized.match(/among\s+(\d+)\s+people/i);
+    const limitPeople = peopleMatch ? parseInt(peopleMatch[1], 10) : candidates.length;
     const countToPay = Math.min(limitPeople, candidates.length);
 
     if (countToPay === 0) {
-      return { records, log: 'Error: No eligible people with an active owed balance were found.' };
+      return { records, log: 'Error: No eligible candidates found.' };
     }
 
-    // Even split amount
-    const evenSplit = Number((totalBudget / countToPay).toFixed(2));
-
-    // We want to apply this split to candidates
-    // Select the first countToPay candidates, deselect all others
-    const emailsToPay = new Set(candidates.slice(0, countToPay).map(c => c.email.toLowerCase()));
-
-    updatedRecords = updatedRecords.map((r) => {
-      const isTarget = emailsToPay.has(r.email.toLowerCase());
-      if (isTarget) {
-        // Set their payment to the split amount, capped at what they are owed
-        const paidAmount = Math.min(evenSplit, r.owed);
-        return {
-          ...r,
-          selected: true,
-          owed: paidAmount, // override their payout amount in the UI grid for this run
-          owedETB: Number((paidAmount * exchangeRate).toFixed(2)),
-        };
-      } else {
-        return {
-          ...r,
-          selected: false,
-        };
-      }
-    });
-
-    const finalSum = updatedRecords.filter(r => r.selected).reduce((sum, r) => sum + r.owed, 0);
-
-    return {
-      records: updatedRecords,
-      log: `Instruction applied: Split $${totalBudget.toFixed(2)} budget evenly among ${countToPay} people ($${evenSplit.toFixed(2)} each, capped at individual owed balance). Total calculated: $${finalSum.toFixed(2)}.`,
-    };
-  }
-
-  // 3. Check for: "pay N people $X each" or "pay everyone $X"
-  const payEachRegex = /pay\s+(?:(\d+)\s+people|everyone)\s+\$?([\d,]+(?:\.\d+)?)(?:\s+each)?/i;
-  const payEachMatch = normalized.match(payEachRegex);
-  if (payEachMatch) {
-    const limitPeople = payEachMatch[1] ? parseInt(payEachMatch[1], 10) : updatedRecords.length;
-    const amountEach = parseFloat(payEachMatch[2].replace(/,/g, ''));
-
-    if (isNaN(amountEach) || amountEach <= 0) {
-      return { records, log: 'Error: Invalid payment amount parsed from command.' };
+    const splitVal = Number((budgetCap / countToPay).toFixed(2));
+    const targets = candidates.slice(0, countToPay);
+    
+    for (const t of targets) {
+      selectedEmails.set(t.email.toLowerCase(), Math.min(splitVal, t.owed));
     }
-
-    const candidates = updatedRecords.filter(r => r.owed > 0);
-    const countToPay = Math.min(limitPeople, candidates.length);
-
-    if (countToPay === 0) {
-      return { records, log: 'Error: No eligible people with an active owed balance were found.' };
-    }
-
-    const emailsToPay = new Set(candidates.slice(0, countToPay).map(c => c.email.toLowerCase()));
-
-    updatedRecords = updatedRecords.map((r) => {
-      const isTarget = emailsToPay.has(r.email.toLowerCase());
-      if (isTarget) {
-        const paidAmount = Math.min(amountEach, r.owed);
-        return {
-          ...r,
-          selected: true,
-          owed: paidAmount,
-          owedETB: Number((paidAmount * exchangeRate).toFixed(2)),
-        };
-      } else {
-        return {
-          ...r,
-          selected: false,
-        };
-      }
-    });
-
-    const finalSum = updatedRecords.filter(r => r.selected).reduce((sum, r) => sum + r.owed, 0);
-
-    return {
-      records: updatedRecords,
-      log: `Instruction applied: Assigned $${amountEach.toFixed(2)} each to ${countToPay} people (capped at owed limit). Total calculated: $${finalSum.toFixed(2)}.`,
-    };
-  }
-
-  // 4. Check for: "distribute $X proportional to owed"
-  const propRegex = /distribute\s+\$?([\d,]+(?:\.\d+)?)\s+proportional(?:\s+to\s+owed)?/i;
-  const propMatch = normalized.match(propRegex);
-  if (propMatch) {
-    const totalBudget = parseFloat(propMatch[1].replace(/,/g, ''));
-    if (isNaN(totalBudget) || totalBudget <= 0) {
-      return { records, log: 'Error: Invalid distribution budget parsed from command.' };
-    }
-
-    const candidates = updatedRecords.filter(r => r.owed > 0);
-    if (candidates.length === 0) {
-      return { records, log: 'Error: No eligible people with an active owed balance were found.' };
+  } else if (distStyle === 'proportional') {
+    if (budgetCap === null || budgetCap <= 0) {
+      return { records, log: 'Error: Please specify a budget amount to distribute (e.g. "distribute $5000 proportional").' };
     }
 
     const totalOwed = candidates.reduce((sum, r) => sum + r.owed, 0);
-
-    updatedRecords = updatedRecords.map((r) => {
-      if (r.owed > 0) {
-        const proportion = r.owed / totalOwed;
-        const paidAmount = Number(Math.min(proportion * totalBudget, r.owed).toFixed(2));
-        return {
-          ...r,
-          selected: paidAmount > 0,
-          owed: paidAmount,
-          owedETB: Number((paidAmount * exchangeRate).toFixed(2)),
-        };
+    for (const c of candidates) {
+      const prop = c.owed / totalOwed;
+      const amount = Number(Math.min(prop * budgetCap, c.owed).toFixed(2));
+      if (amount > 0) {
+        selectedEmails.set(c.email.toLowerCase(), amount);
       }
-      return { ...r, selected: false };
-    });
+    }
+  } else if (distStyle === 'fixed') {
+    // pay fixed amount per person up to optional budgetCap
+    const amt = fixedAmount ?? 0;
+    let currentSum = 0;
+    
+    // Extract optional limit of people: e.g. "pay 25 people $100"
+    const peopleMatch = normalized.match(/(\d+)\s+people/i);
+    const limitPeople = peopleMatch ? parseInt(peopleMatch[1], 10) : candidates.length;
 
-    const finalSum = updatedRecords.filter(r => r.selected).reduce((sum, r) => sum + r.owed, 0);
-
-    return {
-      records: updatedRecords,
-      log: `Instruction applied: Distributed $${totalBudget.toFixed(2)} budget proportionally based on balances. Total calculated: $${finalSum.toFixed(2)}.`,
-    };
+    for (const c of candidates) {
+      if (selectedEmails.size >= limitPeople) break;
+      
+      const payout = Math.min(amt, c.owed);
+      if (budgetCap !== null && currentSum + payout > budgetCap) {
+        // Capped by budget limit
+        const remainder = budgetCap - currentSum;
+        if (remainder > 0) {
+          selectedEmails.set(c.email.toLowerCase(), Number(remainder.toFixed(2)));
+          currentSum += remainder;
+        }
+        break;
+      }
+      selectedEmails.set(c.email.toLowerCase(), payout);
+      currentSum += payout;
+    }
+  } else {
+    // Greedy Full accumulation (default style): pay full balance of each person one-by-one until budget is spent
+    let currentSum = 0;
+    
+    for (const c of candidates) {
+      const payout = c.owed;
+      
+      if (budgetCap !== null) {
+        if (currentSum >= budgetCap) {
+          break;
+        }
+        if (currentSum + payout > budgetCap) {
+          const remainder = budgetCap - currentSum;
+          if (remainder > 0) {
+            selectedEmails.set(c.email.toLowerCase(), Number(remainder.toFixed(2)));
+            currentSum += remainder;
+          }
+          break;
+        }
+      }
+      
+      selectedEmails.set(c.email.toLowerCase(), payout);
+      currentSum += payout;
+    }
   }
 
+  // 5. Update and return records based on selected Map
+  updatedRecords = updatedRecords.map((r) => {
+    const emailKey = r.email.toLowerCase();
+    if (selectedEmails.has(emailKey)) {
+      const paidVal = selectedEmails.get(emailKey) ?? 0;
+      return {
+        ...r,
+        selected: true,
+        owed: paidVal,
+        owedETB: Number((paidVal * exchangeRate).toFixed(2)),
+      };
+    }
+    return {
+      ...r,
+      selected: false,
+    };
+  });
+
+  const finalSum = updatedRecords.filter((r) => r.selected).reduce((sum, r) => sum + r.owed, 0);
+  const selectedCount = updatedRecords.filter((r) => r.selected).length;
+
+  let styleDesc = '';
+  if (distStyle === 'split') styleDesc = 'split budget evenly';
+  else if (distStyle === 'proportional') styleDesc = 'proportional split';
+  else if (distStyle === 'fixed') styleDesc = `fixed payout of $${fixedAmount?.toFixed(2)} each`;
+  else styleDesc = 'full balance payouts';
+
   return {
-    records,
-    log: `Did not understand command: "${command}". Try "split $5000 evenly", "pay 25 people $100 each", or "pay everyone full".`,
+    records: updatedRecords,
+    log: `Instruction applied: Allocated funds using ${styleDesc} (${sortLog}). Selected ${selectedCount} people, total calculation: $${finalSum.toFixed(2)}.`,
   };
 }
