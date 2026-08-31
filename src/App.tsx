@@ -779,12 +779,27 @@ export default function App() {
           return;
         }
 
-        // Lax Column headers lookup
+        // Column headers lookup (Strict exact matches first, then fuzzy fallbacks)
         const headers = (rows[0] as string[]).map((h) => String(h).trim().toLowerCase());
-        const emailIdx = headers.findIndex((h) => h.includes('email') || h.includes('addr'));
-        const nameIdx = headers.findIndex((h) => h.includes('name') || h.includes('person') || h.includes('user'));
-        const accIdx = headers.findIndex((h) => h.includes('acc') || h.includes('bank') || h.includes('number'));
-        const typeIdx = headers.findIndex((h) => h.includes('type') || h.includes('banktype') || h.includes('provider'));
+        
+        let emailIdx = headers.indexOf('email');
+        if (emailIdx === -1) emailIdx = headers.findIndex((h) => h.includes('email') || h.includes('addr'));
+
+        let nameIdx = headers.indexOf('name');
+        if (nameIdx === -1) nameIdx = headers.indexOf('full name');
+        if (nameIdx === -1) nameIdx = headers.indexOf('fullname');
+        if (nameIdx === -1) nameIdx = headers.findIndex((h) => h.includes('name') || h.includes('person'));
+
+        let accIdx = headers.indexOf('bank account');
+        if (accIdx === -1) accIdx = headers.indexOf('account no');
+        if (accIdx === -1) accIdx = headers.indexOf('accountno');
+        if (accIdx === -1) accIdx = headers.indexOf('bankaccount');
+        if (accIdx === -1) accIdx = headers.findIndex((h) => h.includes('account') || h.includes('acc') || h.includes('no'));
+
+        let typeIdx = headers.indexOf('bank type');
+        if (typeIdx === -1) typeIdx = headers.indexOf('banktype');
+        if (typeIdx === -1) typeIdx = headers.indexOf('method');
+        if (typeIdx === -1) typeIdx = headers.findIndex((h) => h.includes('type') || h.includes('method') || h.includes('provider'));
 
         const finalEmailIdx = emailIdx !== -1 ? emailIdx : 0;
         const finalNameIdx = nameIdx !== -1 ? nameIdx : 1;
