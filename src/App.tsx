@@ -308,6 +308,7 @@ export default function App() {
       // Check for blacklist flagged items
       const checked = parsed.map((item) => ({
         ...item,
+        originalOwed: item.owed,
         selected: !flaggedSet.has(item.email.toLowerCase()),
       }));
 
@@ -318,9 +319,21 @@ export default function App() {
     }
   };
 
-  const toggleRecordSelect = (index: number) => {
+  const toggleRecordSelect = (email: string) => {
     setParsedRecords((prev) =>
-      prev.map((rec, idx) => (idx === index ? { ...rec, selected: !rec.selected } : rec))
+      prev.map((rec) =>
+        rec.email.toLowerCase() === email.toLowerCase() ? { ...rec, selected: !rec.selected } : rec
+      )
+    );
+  };
+
+  const updateRecordAmount = (email: string, amount: number) => {
+    setParsedRecords((prev) =>
+      prev.map((rec) =>
+        rec.email.toLowerCase() === email.toLowerCase()
+          ? { ...rec, owed: amount, owedETB: Number((amount * exchangeRate).toFixed(2)) }
+          : rec
+      )
     );
   };
 
@@ -1064,6 +1077,7 @@ export default function App() {
             handleExportGoogleSheet={handleExportGoogleSheet}
             prioritizeRotation={prioritizeRotation}
             setPrioritizeRotation={setPrioritizeRotation}
+            updateRecordAmount={updateRecordAmount}
           />
         )}
 

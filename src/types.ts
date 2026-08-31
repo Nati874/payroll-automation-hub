@@ -19,6 +19,7 @@ export interface PayoutRecord {
   paid: number;   // USD
   flagged: number; // USD
   owed: number;   // USD
+  originalOwed?: number; // baseline limit for conversational planning
   bankAccount?: string; // matched from DB
   bankType?: 'CBE' | 'Telebirr'; // matched from DB
   fullNameDB?: string; // matched from DB

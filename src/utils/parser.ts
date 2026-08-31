@@ -200,7 +200,78 @@ export function parseSmartPayoutCommand(
   }
 
   // Create a deep copy of records to prevent mutation issues
-  let updatedRecords = records.map((r) => ({ ...r }));
+  let updatedRecords = records.map((r) => ({
+    ...r,
+    originalOwed: r.originalOwed ?? r.owed,
+  }));
+
+  // 0. Conversational / Incremental Overrides
+  // a) "remove emnet@gmail.com" / "deselect emnet@gmail.com"
+  const removeMatch = normalized.match(/(?:remove|deselect|exclude|drop)\s+(\S+@\S+)/i);
+  if (removeMatch) {
+    const targetEmail = removeMatch[1].trim().toLowerCase();
+    updatedRecords = updatedRecords.map((r) => {
+      if (r.email.toLowerCase() === targetEmail) {
+        return { ...r, selected: false };
+      }
+      return r;
+    });
+    const finalSum = updatedRecords.filter((r) => r.selected).reduce((sum, r) => sum + r.owed, 0);
+    return {
+      records: updatedRecords,
+      log: `Conversation override: Removed ${targetEmail} from selection. Total: $${finalSum.toFixed(2)}.`,
+    };
+  }
+
+  // b) "add emnet@gmail.com" / "select emnet@gmail.com"
+  const addMatch = normalized.match(/(?:add|select|include)\s+(\S+@\S+)/i);
+  if (addMatch) {
+    const targetEmail = addMatch[1].trim().toLowerCase();
+    updatedRecords = updatedRecords.map((r) => {
+      if (r.email.toLowerCase() === targetEmail) {
+        const val = r.originalOwed ?? r.owed;
+        return {
+          ...r,
+          selected: true,
+          owed: val,
+          owedETB: Number((val * exchangeRate).toFixed(2)),
+        };
+      }
+      return r;
+    });
+    const finalSum = updatedRecords.filter((r) => r.selected).reduce((sum, r) => sum + r.owed, 0);
+    return {
+      records: updatedRecords,
+      log: `Conversation override: Added ${targetEmail} to selection ($${(updatedRecords.find(r => r.email.toLowerCase() === targetEmail)?.owed ?? 0).toFixed(2)}). Total: $${finalSum.toFixed(2)}.`,
+    };
+  }
+
+  // c) "change emnet@gmail.com to 150" / "set emnet@gmail.com to 150"
+  const changeMatch = normalized.match(/(?:change|set)\s+(?:payout\s+for\s+)?(\S+@\S+)\s+(?:payout\s+)?to\s+\$?([\d,]+(?:\.\d+)?)/i);
+  if (changeMatch) {
+    const targetEmail = changeMatch[1].trim().toLowerCase();
+    const targetAmt = parseFloat(changeMatch[2].replace(/,/g, ''));
+    if (!isNaN(targetAmt)) {
+      updatedRecords = updatedRecords.map((r) => {
+        if (r.email.toLowerCase() === targetEmail) {
+          const orig = r.originalOwed ?? r.owed;
+          const cappedVal = Math.min(targetAmt, orig);
+          return {
+            ...r,
+            selected: true,
+            owed: cappedVal,
+            owedETB: Number((cappedVal * exchangeRate).toFixed(2)),
+          };
+        }
+        return r;
+      });
+      const finalSum = updatedRecords.filter((r) => r.selected).reduce((sum, r) => sum + r.owed, 0);
+      return {
+        records: updatedRecords,
+        log: `Conversation override: Set payout for ${targetEmail} to $${targetAmt.toFixed(2)} (capped at owed limit). Total: $${finalSum.toFixed(2)}.`,
+      };
+    }
+  }
 
   // 1. Parse Must-Include Emails set
   const forcedSet = new Set(
@@ -238,8 +309,8 @@ export function parseSmartPayoutCommand(
     sortStrategy = 'largest_owed';
   }
 
-  // Filter candidates with active owed balances
-  let candidates = updatedRecords.filter((r) => r.owed > 0);
+  // Filter candidates with active original owed balances
+  let candidates = updatedRecords.filter((r) => (r.originalOwed ?? r.owed) > 0);
   if (candidates.length === 0) {
     return { records, log: 'Error: No eligible people with an active owed balance were found.' };
   }
@@ -250,9 +321,9 @@ export function parseSmartPayoutCommand(
 
   // Sort otherCandidates
   if (sortStrategy === 'smallest_owed') {
-    otherCandidates.sort((a, b) => a.owed - b.owed);
+    otherCandidates.sort((a, b) => (a.originalOwed ?? a.owed) - (b.originalOwed ?? b.owed));
   } else if (sortStrategy === 'largest_owed') {
-    otherCandidates.sort((a, b) => b.owed - a.owed);
+    otherCandidates.sort((a, b) => (b.originalOwed ?? b.owed) - (a.originalOwed ?? a.owed));
   } else {
     // Keep chronological rotation queue (which is pre-sorted in activeRecords)
     const orderMap = new Map(updatedRecords.map((r, idx) => [r.email.toLowerCase(), idx]));
@@ -330,17 +401,17 @@ export function parseSmartPayoutCommand(
     const targets = queue.slice(0, countToPay);
     
     for (const t of targets) {
-      selectedEmails.set(t.email.toLowerCase(), getCappedPayout(t.owed, splitVal));
+      selectedEmails.set(t.email.toLowerCase(), getCappedPayout(t.originalOwed ?? t.owed, splitVal));
     }
   } else if (distStyle === 'proportional') {
     if (budgetCap === null || budgetCap <= 0) {
       return { records, log: 'Error: Please specify a budget amount to distribute (e.g. "distribute $5000 proportional").' };
     }
 
-    const totalOwed = queue.reduce((sum, r) => sum + r.owed, 0);
+    const totalOwed = queue.reduce((sum, r) => sum + (r.originalOwed ?? r.owed), 0);
     for (const c of queue) {
-      const prop = c.owed / totalOwed;
-      const amount = getCappedPayout(c.owed, prop * budgetCap);
+      const prop = (c.originalOwed ?? c.owed) / totalOwed;
+      const amount = getCappedPayout(c.originalOwed ?? c.owed, prop * budgetCap);
       if (amount > 0) {
         selectedEmails.set(c.email.toLowerCase(), amount);
       }
@@ -355,9 +426,9 @@ export function parseSmartPayoutCommand(
     for (const c of queue) {
       if (selectedEmails.size >= limitPeople) break;
       
-      const payout = getCappedPayout(c.owed, amt);
+      const payout = getCappedPayout(c.originalOwed ?? c.owed, amt);
       if (budgetCap !== null && currentSum + payout > budgetCap) {
-        const remainder = getCappedPayout(c.owed, budgetCap - currentSum);
+        const remainder = getCappedPayout(c.originalOwed ?? c.owed, budgetCap - currentSum);
         if (remainder > 0) {
           selectedEmails.set(c.email.toLowerCase(), Number(remainder.toFixed(2)));
           currentSum += remainder;
@@ -372,14 +443,14 @@ export function parseSmartPayoutCommand(
     let currentSum = 0;
     
     for (const c of queue) {
-      const payout = getCappedPayout(c.owed, c.owed);
+      const payout = getCappedPayout(c.originalOwed ?? c.owed, c.originalOwed ?? c.owed);
       
       if (budgetCap !== null) {
         if (currentSum >= budgetCap) {
           break;
         }
         if (currentSum + payout > budgetCap) {
-          const remainder = getCappedPayout(c.owed, budgetCap - currentSum);
+          const remainder = getCappedPayout(c.originalOwed ?? c.owed, budgetCap - currentSum);
           if (remainder > 0) {
             selectedEmails.set(c.email.toLowerCase(), Number(remainder.toFixed(2)));
             currentSum += remainder;

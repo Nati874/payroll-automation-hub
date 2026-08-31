@@ -22,7 +22,7 @@ interface PayrollProcessingProps {
   setPayoutMode: (val: 'all' | 'half' | 'cap') => void;
   payoutCap: number;
   setPayoutCap: (val: number) => void;
-  toggleRecordSelect: (index: number) => void;
+  toggleRecordSelect: (email: string) => void;
   selectAllVisible: (val: boolean) => void;
   totals: {
     totalUSD: number;
@@ -37,6 +37,7 @@ interface PayrollProcessingProps {
   handleExportGoogleSheet: () => void;
   prioritizeRotation: boolean;
   setPrioritizeRotation: (val: boolean) => void;
+  updateRecordAmount: (email: string, amount: number) => void;
 }
 
 export const PayrollProcessing: React.FC<PayrollProcessingProps> = ({
@@ -59,10 +60,12 @@ export const PayrollProcessing: React.FC<PayrollProcessingProps> = ({
   handleExportExcel,
   handleExportGoogleSheet,
   prioritizeRotation,
-  setPrioritizeRotation
+  setPrioritizeRotation,
+  updateRecordAmount
 }) => {
   const [plannerCommand, setPlannerCommand] = React.useState('');
   const [plannerLog, setPlannerLog] = React.useState('');
+  const [isManualEditMode, setIsManualEditMode] = React.useState(false);
   const [mustIncludeEmails, setMustIncludeEmails] = React.useState(() => {
     return localStorage.getItem('payroll_planner_must_include') || '';
   });
@@ -284,6 +287,13 @@ export const PayrollProcessing: React.FC<PayrollProcessingProps> = ({
                 <button className="btn btn-secondary" onClick={() => selectAllVisible(false)}>
                   Deselect All
                 </button>
+                <button
+                  className={`btn ${isManualEditMode ? 'btn-success' : 'btn-secondary'}`}
+                  onClick={() => setIsManualEditMode(!isManualEditMode)}
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  {isManualEditMode ? 'Lock & Save Payouts' : 'Enable Manual Edit Mode'}
+                </button>
               </div>
             </div>
 
@@ -305,7 +315,7 @@ export const PayrollProcessing: React.FC<PayrollProcessingProps> = ({
                 <tbody>
                   {activeRecords.map((item, index) => {
                     const isLinked = !!item.bankAccount;
-                    const factor = payoutMode === 'half' ? 0.5 : 1;
+                    const factor = isManualEditMode ? 1 : (payoutMode === 'half' ? 0.5 : 1);
                     const isFlagged = flaggedSet.has(item.email.toLowerCase());
 
                     return (
@@ -316,7 +326,7 @@ export const PayrollProcessing: React.FC<PayrollProcessingProps> = ({
                             className="custom-checkbox"
                             checked={item.selected}
                             disabled={isFlagged}
-                            onChange={() => toggleRecordSelect(index)}
+                            onChange={() => toggleRecordSelect(item.email)}
                           />
                         </td>
                         <td style={{ fontWeight: 600 }}>{item.name}</td>
@@ -352,10 +362,26 @@ export const PayrollProcessing: React.FC<PayrollProcessingProps> = ({
                             </button>
                           )}
                         </td>
-                        <td>${item.owed.toFixed(2)}</td>
-                        <td>{(item.owed * exchangeRate).toLocaleString(undefined, { maximumFractionDigits: 1 })} ETB</td>
+                        <td>${(item.originalOwed ?? item.owed).toFixed(2)}</td>
+                        <td>{((item.originalOwed ?? item.owed) * exchangeRate).toLocaleString(undefined, { maximumFractionDigits: 1 })} ETB</td>
                         <td style={{ color: 'var(--color-success)', fontWeight: 700 }}>
-                          ${(item.owed * factor).toFixed(2)}
+                          {isManualEditMode ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              <span>$</span>
+                              <input
+                                type="number"
+                                className="input-field"
+                                style={{ width: '80px', padding: '4px 8px', margin: 0, fontSize: '0.9rem', color: 'var(--color-success)', fontWeight: '700' }}
+                                value={item.owed}
+                                min={0}
+                                max={item.originalOwed ?? item.owed}
+                                step="0.01"
+                                onChange={(e) => updateRecordAmount(item.email, Number(e.target.value))}
+                              />
+                            </div>
+                          ) : (
+                            `$${(item.owed * factor).toFixed(2)}`
+                          )}
                         </td>
                         <td style={{ color: 'var(--color-success)', fontWeight: 700 }}>
                           {((item.owed * factor) * exchangeRate).toLocaleString(undefined, { maximumFractionDigits: 1 })} ETB
