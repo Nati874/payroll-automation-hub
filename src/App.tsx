@@ -138,6 +138,14 @@ export default function App() {
     const saved = localStorage.getItem('payroll_auto_detect_latest_tab');
     return saved !== null ? saved === 'true' : true;
   });
+  const [mustExcludeEmails, setMustExcludeEmails] = useState(() => {
+    return localStorage.getItem('payroll_planner_must_exclude') || '';
+  });
+
+  // Sync mustExcludeEmails to localStorage
+  useEffect(() => {
+    localStorage.setItem('payroll_planner_must_exclude', mustExcludeEmails);
+  }, [mustExcludeEmails]);
 
   // Rotation priority state
   const [prioritizeRotation, setPrioritizeRotation] = useState<boolean>(() => {
@@ -1078,6 +1086,9 @@ export default function App() {
             prioritizeRotation={prioritizeRotation}
             setPrioritizeRotation={setPrioritizeRotation}
             updateRecordAmount={updateRecordAmount}
+            mustExcludeEmails={mustExcludeEmails}
+            setMustExcludeEmails={setMustExcludeEmails}
+            people={people}
           />
         )}
 

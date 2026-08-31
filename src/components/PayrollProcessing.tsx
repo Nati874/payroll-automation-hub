@@ -8,8 +8,143 @@ import {
   Settings as SettingsIcon,
   Download
 } from 'lucide-react';
-import type { PayoutRecord } from '../types';
+import type { PayoutRecord, Person } from '../types';
 import { parseSmartPayoutCommand } from '../utils/parser';
+
+interface EmailAutocompleteInputProps {
+  label: string;
+  value: string;
+  onChange: (val: string) => void;
+  placeholder: string;
+  people: Person[];
+}
+
+const EmailAutocompleteInput: React.FC<EmailAutocompleteInputProps> = ({
+  label,
+  value,
+  onChange,
+  placeholder,
+  people
+}) => {
+  const [suggestions, setSuggestions] = React.useState<string[]>([]);
+  const [activeIdx, setActiveIdx] = React.useState(0);
+  const [show, setShow] = React.useState(false);
+  const containerRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setShow(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, []);
+
+  const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const text = e.target.value;
+    onChange(text);
+
+    const parts = text.split(',');
+    const lastWord = parts[parts.length - 1].trim();
+
+    if (lastWord.length >= 2) {
+      const lowerWord = lastWord.toLowerCase();
+      const existing = new Set(parts.slice(0, -1).map(p => p.trim().toLowerCase()));
+      const matches = people
+        .map((p) => p.email.toLowerCase())
+        .filter((email) => email.includes(lowerWord) && !existing.has(email));
+      
+      setSuggestions(matches.slice(0, 6));
+      setActiveIdx(0);
+      setShow(true);
+    } else {
+      setSuggestions([]);
+      setShow(false);
+    }
+  };
+
+  const handleSelect = (email: string) => {
+    const parts = value.split(',');
+    parts[parts.length - 1] = ' ' + email;
+    const completed = parts.join(',').trim() + ', ';
+    onChange(completed);
+    setSuggestions([]);
+    setShow(false);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (show && suggestions.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setActiveIdx((prev) => (prev + 1) % suggestions.length);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setActiveIdx((prev) => (prev - 1 + suggestions.length) % suggestions.length);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        handleSelect(suggestions[activeIdx]);
+      } else if (e.key === 'Escape') {
+        setShow(false);
+      }
+    }
+  };
+
+  return (
+    <div className="form-group mb-2" ref={containerRef} style={{ position: 'relative' }}>
+      <label className="form-label" style={{ fontSize: '0.75rem', fontWeight: 650 }}>
+        {label}
+      </label>
+      <textarea
+        className="textarea-field"
+        placeholder={placeholder}
+        value={value}
+        onChange={handleTextChange}
+        onKeyDown={handleKeyDown}
+        style={{ minHeight: '60px' }}
+      />
+      {show && suggestions.length > 0 && (
+        <ul
+          style={{
+            position: 'absolute',
+            top: '100%',
+            left: 0,
+            right: 0,
+            zIndex: 1000,
+            backgroundColor: '#ffffff',
+            border: '1px solid #cbd5e1',
+            borderRadius: '8px',
+            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.08)',
+            maxHeight: '160px',
+            overflowY: 'auto',
+            listStyle: 'none',
+            margin: '4px 0 0 0',
+            padding: '4px 0',
+          }}
+        >
+          {suggestions.map((email, idx) => (
+            <li
+              key={email}
+              onClick={() => handleSelect(email)}
+              style={{
+                padding: '8px 12px',
+                cursor: 'pointer',
+                fontSize: '0.85rem',
+                backgroundColor: idx === activeIdx ? '#f1f5f9' : 'transparent',
+                color: idx === activeIdx ? '#0f172a' : '#475569',
+                fontWeight: idx === activeIdx ? '600' : 'normal',
+                transition: 'background-color 0.15s',
+              }}
+              onMouseEnter={() => setActiveIdx(idx)}
+            >
+              {email}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+};
 
 interface PayrollProcessingProps {
   rawPayrollText: string;
@@ -38,6 +173,9 @@ interface PayrollProcessingProps {
   prioritizeRotation: boolean;
   setPrioritizeRotation: (val: boolean) => void;
   updateRecordAmount: (email: string, amount: number) => void;
+  mustExcludeEmails: string;
+  setMustExcludeEmails: (val: string) => void;
+  people: Person[];
 }
 
 export const PayrollProcessing: React.FC<PayrollProcessingProps> = ({
@@ -61,7 +199,10 @@ export const PayrollProcessing: React.FC<PayrollProcessingProps> = ({
   handleExportGoogleSheet,
   prioritizeRotation,
   setPrioritizeRotation,
-  updateRecordAmount
+  updateRecordAmount,
+  mustExcludeEmails,
+  setMustExcludeEmails,
+  people
 }) => {
   const [plannerCommand, setPlannerCommand] = React.useState('');
   const [plannerLog, setPlannerLog] = React.useState('');
@@ -80,7 +221,8 @@ export const PayrollProcessing: React.FC<PayrollProcessingProps> = ({
       plannerCommand,
       parsedRecords,
       exchangeRate,
-      mustIncludeEmails
+      mustIncludeEmails,
+      mustExcludeEmails
     );
     setParsedRecords(updated);
     setPlannerLog(log);
@@ -255,16 +397,20 @@ export const PayrollProcessing: React.FC<PayrollProcessingProps> = ({
                   Apply Command
                 </button>
               </div>
-              <div className="form-group mb-2">
-                <label className="form-label" style={{ fontSize: '0.75rem', fontWeight: 650 }}>
-                  Must-Include Emails (comma-separated, paid first)
-                </label>
-                <textarea
-                  className="textarea-field"
+              <div className="grid-2">
+                <EmailAutocompleteInput
+                  label="Must-Include Emails (comma-separated, paid first)"
                   placeholder="e.g. emnet@gmail.com, bilen@gmail.com"
                   value={mustIncludeEmails}
-                  onChange={(e) => setMustIncludeEmails(e.target.value)}
-                  style={{ minHeight: '60px' }}
+                  onChange={setMustIncludeEmails}
+                  people={people}
+                />
+                <EmailAutocompleteInput
+                  label="Must-Exclude Emails (comma-separated, skipped)"
+                  placeholder="e.g. block@gmail.com, skip@gmail.com"
+                  value={mustExcludeEmails}
+                  onChange={setMustExcludeEmails}
+                  people={people}
                 />
               </div>
               {plannerLog && (

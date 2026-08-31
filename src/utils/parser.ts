@@ -191,7 +191,8 @@ export function parseSmartPayoutCommand(
   command: string,
   records: PayoutRecord[],
   exchangeRate: number,
-  mustIncludeEmails: string = ''
+  mustIncludeEmails: string = '',
+  mustExcludeEmails: string = ''
 ): { records: PayoutRecord[]; log: string } {
   const normalized = command.trim().toLowerCase();
   
@@ -281,6 +282,14 @@ export function parseSmartPayoutCommand(
       .filter((e) => e.length > 0)
   );
 
+  // 1.5 Parse Must-Exclude Emails set
+  const excludeSet = new Set(
+    mustExcludeEmails
+      .split(',')
+      .map((e) => e.trim().toLowerCase())
+      .filter((e) => e.length > 0)
+  );
+
   // 2. Parse individual threshold caps (e.g., "if owed $100+ pay them 100")
   let capThreshold: number | null = null;
   let capLimit: number | null = null;
@@ -309,8 +318,8 @@ export function parseSmartPayoutCommand(
     sortStrategy = 'largest_owed';
   }
 
-  // Filter candidates with active original owed balances
-  let candidates = updatedRecords.filter((r) => (r.originalOwed ?? r.owed) > 0);
+  // Filter candidates with active original owed balances and not in exclude set
+  let candidates = updatedRecords.filter((r) => (r.originalOwed ?? r.owed) > 0 && !excludeSet.has(r.email.toLowerCase()));
   if (candidates.length === 0) {
     return { records, log: 'Error: No eligible people with an active owed balance were found.' };
   }
@@ -467,6 +476,12 @@ export function parseSmartPayoutCommand(
   // 7. Update and return records based on selected Map
   updatedRecords = updatedRecords.map((r) => {
     const emailKey = r.email.toLowerCase();
+    if (excludeSet.has(emailKey)) {
+      return {
+        ...r,
+        selected: false,
+      };
+    }
     if (selectedEmails.has(emailKey)) {
       const paidVal = selectedEmails.get(emailKey) ?? 0;
       return {
