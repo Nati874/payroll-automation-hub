@@ -220,10 +220,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
               </div>
             </div>
           )}
-
-          <div style={{ marginTop: '12px', fontSize: '0.75rem', color: '#64748b' }}>
-            <span>Default Admin: <code>admin@payroll.hub</code> / <code>admin123456</code></span>
-          </div>
         </div>
       </div>
     </div>

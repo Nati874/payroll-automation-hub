@@ -233,24 +233,72 @@ export default function App() {
       const res = await fetchUnifiedDb();
       if (res.success && res.data) {
         const d = res.data;
-        if (Array.isArray(d.people) && d.people.length > 0) {
-          setPeople(d.people);
+        let needsCloudUpload = false;
+        const deltaToUpload: any = {};
+
+        // 1. Merge People: if cloud is empty, upload existing local people; else merge
+        const cloudPeople = Array.isArray(d.people) ? d.people : [];
+        if (cloudPeople.length > 0) {
+          const cloudMap = new Map(cloudPeople.map((p) => [p.email.toLowerCase(), p]));
+          let mergedCount = 0;
+          for (const lp of people) {
+            if (lp.email && !cloudMap.has(lp.email.toLowerCase())) {
+              cloudPeople.push(lp);
+              mergedCount++;
+            }
+          }
+          setPeople(cloudPeople);
+          if (mergedCount > 0) {
+            deltaToUpload.people = cloudPeople;
+            needsCloudUpload = true;
+          }
+        } else if (people.length > 0) {
+          // Cloud database is empty: migrate local people to cloud!
+          deltaToUpload.people = people;
+          needsCloudUpload = true;
         }
-        if (Array.isArray(d.divisions)) {
+
+        // 2. Merge Divisions
+        if (Array.isArray(d.divisions) && d.divisions.length > 0) {
           setDivisions(d.divisions);
+        } else if (divisions.length > 0) {
+          deltaToUpload.divisions = divisions;
+          needsCloudUpload = true;
         }
-        if (Array.isArray(d.flaggedEmails)) {
+
+        // 3. Merge Flagged Emails
+        if (Array.isArray(d.flaggedEmails) && d.flaggedEmails.length > 0) {
           setFlaggedEmails(d.flaggedEmails);
+        } else if (flaggedEmails.length > 0) {
+          deltaToUpload.flaggedEmails = flaggedEmails;
+          needsCloudUpload = true;
         }
-        if (typeof d.exchangeRate === 'number') {
+
+        // 4. Exchange Rate
+        if (typeof d.exchangeRate === 'number' && d.exchangeRate > 0) {
           setExchangeRate(d.exchangeRate);
+        } else if (exchangeRate > 0) {
+          deltaToUpload.exchangeRate = exchangeRate;
+          needsCloudUpload = true;
         }
+
+        // 5. Google Config
         if (d.googleConfig && (d.googleConfig.clientId || d.googleConfig.spreadsheetId || d.googleConfig.apiKey)) {
           setGoogleConfig(d.googleConfig);
+        } else if (googleConfig && (googleConfig.clientId || googleConfig.spreadsheetId || googleConfig.apiKey)) {
+          deltaToUpload.googleConfig = googleConfig;
+          needsCloudUpload = true;
         }
-        if (typeof d.mustExcludeEmails === 'string') {
+
+        // 6. Must-Exclude Planner List
+        if (typeof d.mustExcludeEmails === 'string' && d.mustExcludeEmails.trim()) {
           setMustExcludeEmails(d.mustExcludeEmails);
+        } else if (mustExcludeEmails.trim()) {
+          deltaToUpload.mustExcludeEmails = mustExcludeEmails;
+          needsCloudUpload = true;
         }
+
+        // 7. Automation Configuration
         if (d.autoConfig) {
           if (d.autoConfig.targetUrl) setAutoTargetUrl(d.autoConfig.targetUrl);
           if (d.autoConfig.authHeader) setAutoAuthHeader(d.autoConfig.authHeader);
@@ -258,9 +306,23 @@ export default function App() {
           if (typeof d.autoConfig.autoDetectLatestTab === 'boolean') {
             setAutoDetectLatestTab(d.autoConfig.autoDetectLatestTab);
           }
+        } else if (autoTargetUrl || autoAuthHeader) {
+          deltaToUpload.autoConfig = {
+            targetUrl: autoTargetUrl,
+            authHeader: autoAuthHeader,
+            delay: autoDelay,
+            autoDetectLatestTab,
+          };
+          needsCloudUpload = true;
         }
+
+        // If local had data not on cloud, push to cloud now
+        if (needsCloudUpload) {
+          await saveUnifiedDb(deltaToUpload);
+        }
+
         if (notify) {
-          showNotif('success', 'Connected to unified cloud database.');
+          showNotif('success', 'Connected to unified cloud database. All records are in sync!');
         }
       }
     } catch (err: any) {

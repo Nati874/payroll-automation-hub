@@ -21,9 +21,27 @@ const DB_PATH = path.join(__dirname, 'data', 'db.json');
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-// Helper: Password Hashing with SHA-256 and Salt
-function hashPassword(password, salt = 'payroll_hub_salt') {
-  return crypto.createHash('sha256').update(password + salt).digest('hex');
+// Helper: Cryptographic Salt Generator
+function generateSalt() {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+// Helper: NIST/OWASP Standard Password Hashing with PBKDF2 (SHA-512, 100k iterations)
+function hashPassword(password, salt) {
+  const effectiveSalt = salt || 'payroll_hub_default_salt';
+  return crypto.pbkdf2Sync(password, effectiveSalt, 100000, 64, 'sha512').toString('hex');
+}
+
+// Helper: Password verification with auto-upgrade
+function verifyPassword(inputPassword, storedHash, salt) {
+  const pbkdf2Hash = hashPassword(inputPassword, salt);
+  if (pbkdf2Hash === storedHash) return { valid: true, needsUpgrade: false };
+
+  // Fallback: check legacy SHA-256 if migrating from earlier setup
+  const legacyHash = crypto.createHash('sha256').update(inputPassword + (salt || 'payroll_hub_salt')).digest('hex');
+  if (legacyHash === storedHash) return { valid: true, needsUpgrade: true };
+
+  return { valid: false, needsUpgrade: false };
 }
 
 // Helper: Ensure Database Directory & File Exist
@@ -34,13 +52,14 @@ function ensureDb() {
   }
 
   if (!fs.existsSync(DB_PATH)) {
+    const adminSalt = generateSalt();
     const defaultDb = {
       users: [
         {
           id: 'admin-1',
-          email: process.env.ADMIN_EMAIL || 'admin@payroll.hub',
-          passwordHash: hashPassword(process.env.ADMIN_PASSWORD || 'admin123456'),
-          salt: 'payroll_hub_salt',
+          email: process.env.ADMIN_EMAIL || 'mebatsionmulugeta@gmail.com',
+          passwordHash: hashPassword(process.env.ADMIN_PASSWORD || 'natisgreat21@bf', adminSalt),
+          salt: adminSalt,
           role: 'admin',
           createdAt: new Date().toISOString(),
         },
@@ -73,7 +92,23 @@ function readDb() {
   ensureDb();
   try {
     const raw = fs.readFileSync(DB_PATH, 'utf-8');
-    return JSON.parse(raw);
+    const data = JSON.parse(raw);
+    
+    // Ensure mebatsionmulugeta@gmail.com admin account is present with PBKDF2 encryption
+    if (!data.users || !data.users.some((u) => u.email.toLowerCase() === 'mebatsionmulugeta@gmail.com')) {
+      if (!data.users) data.users = [];
+      const salt = generateSalt();
+      data.users.push({
+        id: `admin-${Date.now()}`,
+        email: 'mebatsionmulugeta@gmail.com',
+        passwordHash: hashPassword('natisgreat21@bf', salt),
+        salt,
+        role: 'admin',
+        createdAt: new Date().toISOString(),
+      });
+      writeDb(data);
+    }
+    return data;
   } catch (err) {
     console.error('Error reading db.json:', err);
     return null;
@@ -89,24 +124,34 @@ function writeDb(data) {
   fs.renameSync(tempPath, DB_PATH);
 }
 
-// Simple Token Verification Helper
+// HMAC-Signed JWT-style Token Generator
+const JWT_SECRET = process.env.JWT_SECRET || 'payroll_hub_production_hmac_secret_key_2026';
+
 function generateToken(user) {
   const payload = {
     userId: user.id,
     email: user.email,
     role: user.role,
     iat: Date.now(),
+    exp: Date.now() + 30 * 24 * 60 * 60 * 1000, // 30 days
   };
-  return Buffer.from(JSON.stringify(payload)).toString('base64');
+  const data = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = crypto.createHmac('sha256', JWT_SECRET).update(data).digest('base64url');
+  return `${data}.${signature}`;
 }
 
 function verifyToken(token) {
   try {
     if (!token) return null;
     const cleanToken = token.startsWith('Bearer ') ? token.slice(7) : token;
-    const decoded = JSON.parse(Buffer.from(cleanToken, 'base64').toString('utf-8'));
-    // Valid for 30 days
-    if (Date.now() - decoded.iat > 30 * 24 * 60 * 60 * 1000) return null;
+    const parts = cleanToken.split('.');
+    if (parts.length !== 2) return null;
+    const [data, signature] = parts;
+    const expectedSig = crypto.createHmac('sha256', JWT_SECRET).update(data).digest('base64url');
+    if (signature !== expectedSig) return null;
+
+    const decoded = JSON.parse(Buffer.from(data, 'base64url').toString('utf-8'));
+    if (Date.now() > decoded.exp) return null;
     return decoded;
   } catch (err) {
     return null;
@@ -121,7 +166,7 @@ function verifyToken(token) {
 app.get('/', (req, res) => {
   res.json({
     status: 'online',
-    message: 'Payroll Automation Hub Unified Backend & Database is running!',
+    message: 'Payroll Automation Hub Unified Backend & Database is running securely!',
     timestamp: new Date().toISOString(),
   });
 });
@@ -160,9 +205,16 @@ app.post('/api/auth/login', (req, res) => {
     return res.status(401).json({ success: false, message: 'Invalid email or password.' });
   }
 
-  const hashed = hashPassword(password, user.salt || 'payroll_hub_salt');
-  if (hashed !== user.passwordHash) {
+  const { valid, needsUpgrade } = verifyPassword(password, user.passwordHash, user.salt);
+  if (!valid) {
     return res.status(401).json({ success: false, message: 'Invalid email or password.' });
+  }
+
+  // Auto-upgrade password hash to PBKDF2 if needed
+  if (needsUpgrade) {
+    user.salt = generateSalt();
+    user.passwordHash = hashPassword(password, user.salt);
+    writeDb(db);
   }
 
   const token = generateToken(user);
