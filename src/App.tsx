@@ -21,8 +21,14 @@ import { EmailFormatters } from './components/EmailFormatters';
 import { PayoutAutomation } from './components/PayoutAutomation';
 import { GlobalSettings } from './components/GlobalSettings';
 import { QuickAddModal, AddPersonModal, AddDivisionModal } from './components/Modals';
+import { AuthModal } from './components/AuthModal';
+import { fetchUnifiedDb, saveUnifiedDb, getAuthUser, clearAuthSession, type AuthUser } from './utils/api';
 
 export default function App() {
+  // Authentication & Unified Cloud State
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => getAuthUser());
+  const [isSyncingCloud, setIsSyncingCloud] = useState(false);
+
   // Navigation
   const [activeTab, setActiveTab] = useState<'payroll' | 'database' | 'emails' | 'automation' | 'settings'>('payroll');
 
@@ -216,6 +222,159 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('payroll_auto_detect_latest_tab', autoDetectLatestTab.toString());
   }, [autoDetectLatestTab]);
+
+  // ---------------------------------------------------------------------------
+  // Unified Cloud Database Fetch & Synchronization
+  // ---------------------------------------------------------------------------
+
+  const loadFromCloud = async (notify = false) => {
+    setIsSyncingCloud(true);
+    try {
+      const res = await fetchUnifiedDb();
+      if (res.success && res.data) {
+        const d = res.data;
+        if (Array.isArray(d.people) && d.people.length > 0) {
+          setPeople(d.people);
+        }
+        if (Array.isArray(d.divisions)) {
+          setDivisions(d.divisions);
+        }
+        if (Array.isArray(d.flaggedEmails)) {
+          setFlaggedEmails(d.flaggedEmails);
+        }
+        if (typeof d.exchangeRate === 'number') {
+          setExchangeRate(d.exchangeRate);
+        }
+        if (d.googleConfig && (d.googleConfig.clientId || d.googleConfig.spreadsheetId || d.googleConfig.apiKey)) {
+          setGoogleConfig(d.googleConfig);
+        }
+        if (typeof d.mustExcludeEmails === 'string') {
+          setMustExcludeEmails(d.mustExcludeEmails);
+        }
+        if (d.autoConfig) {
+          if (d.autoConfig.targetUrl) setAutoTargetUrl(d.autoConfig.targetUrl);
+          if (d.autoConfig.authHeader) setAutoAuthHeader(d.autoConfig.authHeader);
+          if (typeof d.autoConfig.delay === 'number') setAutoDelay(d.autoConfig.delay);
+          if (typeof d.autoConfig.autoDetectLatestTab === 'boolean') {
+            setAutoDetectLatestTab(d.autoConfig.autoDetectLatestTab);
+          }
+        }
+        if (notify) {
+          showNotif('success', 'Connected to unified cloud database.');
+        }
+      }
+    } catch (err: any) {
+      console.error('Failed to load from unified cloud:', err);
+    } finally {
+      setIsSyncingCloud(false);
+    }
+  };
+
+  const onManualSyncToCloud = async () => {
+    setIsSyncingCloud(true);
+    try {
+      const res = await saveUnifiedDb({
+        people,
+        divisions,
+        flaggedEmails,
+        exchangeRate,
+        googleConfig,
+        mustExcludeEmails,
+        autoConfig: {
+          targetUrl: autoTargetUrl,
+          authHeader: autoAuthHeader,
+          delay: autoDelay,
+          autoDetectLatestTab,
+        },
+      });
+      if (res.success) {
+        showNotif('success', 'Pushed all data to unified cloud database.');
+      } else {
+        showNotif('error', res.message || 'Cloud sync failed.');
+      }
+    } catch (err: any) {
+      showNotif('error', `Cloud sync failed: ${err.message}`);
+    } finally {
+      setIsSyncingCloud(false);
+    }
+  };
+
+  const handleSignOut = () => {
+    clearAuthSession();
+    setCurrentUser(null);
+    showNotif('success', 'Signed out successfully.');
+  };
+
+  // Initial load from cloud when user is logged in
+  useEffect(() => {
+    if (currentUser) {
+      loadFromCloud();
+    }
+  }, [currentUser]);
+
+  // Debounced auto-sync to unified cloud database on changes
+  useEffect(() => {
+    if (!currentUser) return;
+    const t = setTimeout(() => {
+      saveUnifiedDb({ people });
+    }, 1200);
+    return () => clearTimeout(t);
+  }, [people, currentUser]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    const t = setTimeout(() => {
+      saveUnifiedDb({ divisions });
+    }, 1200);
+    return () => clearTimeout(t);
+  }, [divisions, currentUser]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    const t = setTimeout(() => {
+      saveUnifiedDb({ flaggedEmails });
+    }, 1200);
+    return () => clearTimeout(t);
+  }, [flaggedEmails, currentUser]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    const t = setTimeout(() => {
+      saveUnifiedDb({ exchangeRate });
+    }, 1200);
+    return () => clearTimeout(t);
+  }, [exchangeRate, currentUser]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    const t = setTimeout(() => {
+      saveUnifiedDb({ googleConfig });
+    }, 1200);
+    return () => clearTimeout(t);
+  }, [googleConfig, currentUser]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    const t = setTimeout(() => {
+      saveUnifiedDb({ mustExcludeEmails });
+    }, 1200);
+    return () => clearTimeout(t);
+  }, [mustExcludeEmails, currentUser]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    const t = setTimeout(() => {
+      saveUnifiedDb({
+        autoConfig: {
+          targetUrl: autoTargetUrl,
+          authHeader: autoAuthHeader,
+          delay: autoDelay,
+          autoDetectLatestTab,
+        },
+      });
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [autoTargetUrl, autoAuthHeader, autoDelay, autoDetectLatestTab, currentUser]);
 
   // Derived filtered directory list
   const [peopleSearch, setPeopleSearch] = useState('');
@@ -1049,8 +1208,24 @@ export default function App() {
 
   return (
     <div className="app-container">
+      {/* Security Check Modal if unauthenticated */}
+      {!currentUser && (
+        <AuthModal
+          onSuccess={(user) => {
+            setCurrentUser(user);
+            loadFromCloud(true);
+          }}
+        />
+      )}
+
       {/* Sidebar navigation */}
-      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} exchangeRate={exchangeRate} />
+      <Sidebar
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        exchangeRate={exchangeRate}
+        currentUser={currentUser}
+        onSignOut={handleSignOut}
+      />
 
       {/* Main dashboard content area */}
       <main className="main-content">
@@ -1184,6 +1359,10 @@ export default function App() {
             importBackupJSON={importBackupJSON}
             googleConfig={googleConfig}
             setGoogleConfig={setGoogleConfig}
+            currentUser={currentUser}
+            onManualSyncToCloud={onManualSyncToCloud}
+            onManualPullFromCloud={() => loadFromCloud(true)}
+            isSyncingCloud={isSyncingCloud}
           />
         )}
       </main>
